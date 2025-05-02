@@ -4,35 +4,33 @@ from scipy.integrate import solve_ivp
 from scipy import linalg
 import matplotlib.animation as animation
 
-# Vehicle parameters (2013 Ford Escape)
-# Mass properties
+# Vehicle parameters for Ford Escape from PSET5
+# Mass
 m_s = 1465       # Sprung mass (kg)
 m_uf = 129       # Front unsprung mass (kg)
 m_ur = 129       # Rear unsprung mass (kg)
 
-# Geometric properties
+# Geometric properties (I'm calling a, b as L1 and L2 for simplicity)
 L = 2.6924       # Wheelbase (m)
 a = 1.143        # Distance from CG to front axle (m)
 b = 1.549        # Distance from CG to rear axle (m)
 
-# Spring stiffness (N/m)
+# Spring stiffness (N/m). I guessed these.
 k_sf = 30000     # Front suspension spring
 k_sr = 25000     # Rear suspension spring
 k_tf = 200000    # Front tire vertical stiffness
 k_tr = 200000    # Rear tire vertical stiffness
 
-# Damping coefficients (N·s/m)
+# Damping coefficients (N·s/m), which are arbitrarily chosen.
 c_sf = 2800      # Front suspension damping
 c_sr = 2600      # Rear suspension damping
 
-# Inertia
-I_y = 2600       # Pitch moment of inertia (kg·m²)
-
+# Pitch Moment of Inertia, in kgm^2
+I_y = 2600      
 # Gravity
-g = 9.81         # Acceleration due to gravity (m/s²)
+g = 9.81       
 
-# Define state variable order: [z_s, theta, z_uf, z_ur, z_s_dot, theta_dot, z_uf_dot, z_ur_dot]
-# Where:
+#Definitions
 #   z_s: Vertical displacement of sprung mass
 #   theta: Pitch angle of sprung mass
 #   z_uf: Vertical displacement of front unsprung mass
@@ -43,7 +41,6 @@ g = 9.81         # Acceleration due to gravity (m/s²)
 #   z_ur_dot: Vertical velocity of rear unsprung mass
 
 def system_dynamics(t, state, damping=True, road_input="front", amplitude=0.05):
-    # Unpack state variables
     z_s, theta, z_uf, z_ur, z_s_dot, theta_dot, z_uf_dot, z_ur_dot = state
 
     # Road input displacements (step or impulse at front, rear, or both)
@@ -57,16 +54,15 @@ def system_dynamics(t, state, damping=True, road_input="front", amplitude=0.05):
         z_rf = amplitude if t > 0.5 else 0
         z_rr = amplitude if t > 0.5 else 0
 
-    # Calculate vertical displacements at front and rear suspension connection points
+    # Vertical displacement at connection points
     z_sf = z_s - a * theta  # Front suspension point on body
     z_sr = z_s + b * theta  # Rear suspension point on body
 
     # Suspension forces
-    # Spring forces
+    # Just hookes law
     F_sf_spring = k_sf * (z_uf - z_sf)
     F_sr_spring = k_sr * (z_ur - z_sr)
 
-    # Damping forces (only if damping is enabled)
     if damping:
         F_sf_damper = c_sf * (z_uf_dot - (z_s_dot - a * theta_dot))
         F_sr_damper = c_sr * (z_ur_dot - (z_s_dot + b * theta_dot))
@@ -74,11 +70,11 @@ def system_dynamics(t, state, damping=True, road_input="front", amplitude=0.05):
         F_sf_damper = 0
         F_sr_damper = 0
 
-    # Tire forces
+    # How do tires work?
     F_tf = k_tf * (z_rf - z_uf)
     F_tr = k_tr * (z_rr - z_ur)
 
-    # Equations of motion
+    # Equations of motion (I hope these are right)
     # Sprung mass vertical acceleration
     z_s_ddot = (F_sf_spring + F_sf_damper + F_sr_spring + F_sr_damper) / m_s
 
@@ -95,10 +91,7 @@ def system_dynamics(t, state, damping=True, road_input="front", amplitude=0.05):
 
 def calculate_natural_frequencies():
     """
-    Calculate the natural frequencies and modes of the system.
-
-    Returns:
-        Dictionary with natural frequencies, mode shapes, and centers of oscillation
+    I'm finding f_nat using matrices, so I'm doing eigenvalue analysis. Ha!
     """
     # Construct mass matrix
     M = np.zeros((4, 4))
@@ -137,10 +130,10 @@ def calculate_natural_frequencies():
     eigenvalues = eigvals[idx].real
     eigenvectors = eigvecs[:, idx].real
 
-    # Calculate natural frequencies in Hz
+    # Convert to hz
     natural_frequencies = np.sqrt(eigenvalues) / (2 * np.pi)
 
-    # Calculate centers of oscillation for the sprung mass modes
+    # Center of Oscilation calculation
     # (The first two modes correspond to the sprung mass)
     centers_of_oscillation = []
 
@@ -161,18 +154,7 @@ def calculate_natural_frequencies():
     }
 
 def run_simulation(damping=True, road_input="front", amplitude=0.05, t_max=5):
-    """
-    Run the simulation with given parameters.
 
-    Args:
-        damping: Boolean, whether to include damping
-        road_input: String, "front", "rear", or "both"
-        amplitude: Float, amplitude of road input
-        t_max: Float, simulation time
-
-    Returns:
-        Dictionary with simulation results
-    """
     # Initial conditions (all zeros - system at rest)
     initial_state = np.zeros(8)
 
@@ -210,16 +192,9 @@ def run_simulation(damping=True, road_input="front", amplitude=0.05, t_max=5):
     }
 
 def estimate_centers_of_oscillation(results, t_start=1.0):
-    """
-    Estimate centers of oscillation from simulation results.
-
-    Args:
-        results: Dictionary with simulation results
-        t_start: Time to start analysis (after initial transient)
-
-    Returns:
-        Estimated center of oscillation
-    """
+    """    
+    Basically, what are the COO in our simul, and how different are they from calculated values?
+   
     # Find indices after t_start
     indices = results['t'] > t_start
 
@@ -239,17 +214,14 @@ def estimate_centers_of_oscillation(results, t_start=1.0):
         peak_theta_values = [theta[i] for i in peaks_z_s]
 
         # Calculate ratio (should be constant for a mode)
-        if np.mean(np.abs(peak_theta_values)) > 1e-6:  # Avoid division by zero
+        if np.mean(np.abs(peak_theta_values)) > 1e-6:  # epsilon memes
             x_co = -np.mean(peak_z_s_values) / np.mean(peak_theta_values)
             return x_co
 
-    return None  # Unable to estimate
+    return None  # if failing
 
 def plot_results(results_undamped, results_damped, natural_frequencies, centers_of_oscillation):
-    """
-    Plot the simulation results.
-    """
-    # Create figure with 4 subplots instead of 3
+
     fig, axs = plt.subplots(4, 1, figsize=(10, 16))
 
     # Plot sprung mass displacement
@@ -295,7 +267,7 @@ def plot_results(results_undamped, results_damped, natural_frequencies, centers_
 
 # Main execution
 if __name__ == "__main__":
-    # Calculate natural frequencies and mode shapes
+    #Driver Code
     modal_analysis = calculate_natural_frequencies()
     natural_frequencies = modal_analysis['natural_frequencies']
     centers_of_oscillation = modal_analysis['centers_of_oscillation']
