@@ -1,0 +1,337 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+from scipy import linalg
+import matplotlib.animation as animation
+
+# Vehicle parameters (2013 Ford Escape)
+# Mass properties
+m_s = 1465       # Sprung mass (kg)
+m_uf = 129       # Front unsprung mass (kg)
+m_ur = 129       # Rear unsprung mass (kg)
+
+# Geometric properties
+L = 2.6924       # Wheelbase (m)
+a = 1.143        # Distance from CG to front axle (m)
+b = 1.549        # Distance from CG to rear axle (m)
+
+# Spring stiffness (N/m)
+k_sf = 30000     # Front suspension spring
+k_sr = 25000     # Rear suspension spring
+k_tf = 200000    # Front tire vertical stiffness
+k_tr = 200000    # Rear tire vertical stiffness
+
+# Damping coefficients (N·s/m)
+c_sf = 2800      # Front suspension damping
+c_sr = 2600      # Rear suspension damping
+
+# Inertia
+I_y = 2600       # Pitch moment of inertia (kg·m²)
+
+# Gravity
+g = 9.81         # Acceleration due to gravity (m/s²)
+
+# Define state variable order: [z_s, theta, z_uf, z_ur, z_s_dot, theta_dot, z_uf_dot, z_ur_dot]
+# Where:
+#   z_s: Vertical displacement of sprung mass
+#   theta: Pitch angle of sprung mass
+#   z_uf: Vertical displacement of front unsprung mass
+#   z_ur: Vertical displacement of rear unsprung mass
+#   z_s_dot: Vertical velocity of sprung mass
+#   theta_dot: Pitch angular velocity
+#   z_uf_dot: Vertical velocity of front unsprung mass
+#   z_ur_dot: Vertical velocity of rear unsprung mass
+
+def system_dynamics(t, state, damping=True, road_input="front", amplitude=0.05):
+    # Unpack state variables
+    z_s, theta, z_uf, z_ur, z_s_dot, theta_dot, z_uf_dot, z_ur_dot = state
+
+    # Road input displacements (step or impulse at front, rear, or both)
+    if road_input == "front":
+        z_rf = amplitude if t > 0.5 else 0  # Step input on front wheel at t=0.5s
+        z_rr = 0
+    elif road_input == "rear":
+        z_rf = 0
+        z_rr = amplitude if t > 0.5 else 0  # Step input on rear wheel at t=0.5s
+    else:  # Both (default)
+        z_rf = amplitude if t > 0.5 else 0
+        z_rr = amplitude if t > 0.5 else 0
+
+    # Calculate vertical displacements at front and rear suspension connection points
+    z_sf = z_s - a * theta  # Front suspension point on body
+    z_sr = z_s + b * theta  # Rear suspension point on body
+
+    # Suspension forces
+    # Spring forces
+    F_sf_spring = k_sf * (z_uf - z_sf)
+    F_sr_spring = k_sr * (z_ur - z_sr)
+
+    # Damping forces (only if damping is enabled)
+    if damping:
+        F_sf_damper = c_sf * (z_uf_dot - (z_s_dot - a * theta_dot))
+        F_sr_damper = c_sr * (z_ur_dot - (z_s_dot + b * theta_dot))
+    else:
+        F_sf_damper = 0
+        F_sr_damper = 0
+
+    # Tire forces
+    F_tf = k_tf * (z_rf - z_uf)
+    F_tr = k_tr * (z_rr - z_ur)
+
+    # Equations of motion
+    # Sprung mass vertical acceleration
+    z_s_ddot = (F_sf_spring + F_sf_damper + F_sr_spring + F_sr_damper) / m_s
+
+    # Sprung mass pitch acceleration
+    theta_ddot = (-a * (F_sf_spring + F_sf_damper) + b * (F_sr_spring + F_sr_damper)) / I_y
+
+    # Front unsprung mass vertical acceleration
+    z_uf_ddot = (F_tf - F_sf_spring - F_sf_damper) / m_uf
+
+    # Rear unsprung mass vertical acceleration
+    z_ur_ddot = (F_tr - F_sr_spring - F_sr_damper) / m_ur
+
+    return [z_s_dot, theta_dot, z_uf_dot, z_ur_dot, z_s_ddot, theta_ddot, z_uf_ddot, z_ur_ddot]
+
+def calculate_natural_frequencies():
+    """
+    Calculate the natural frequencies and modes of the system.
+
+    Returns:
+        Dictionary with natural frequencies, mode shapes, and centers of oscillation
+    """
+    # Construct mass matrix
+    M = np.zeros((4, 4))
+    M[0, 0] = m_s
+    M[1, 1] = I_y
+    M[2, 2] = m_uf
+    M[3, 3] = m_ur
+
+    # Construct stiffness matrix
+    K = np.zeros((4, 4))
+    K[0, 0] = k_sf + k_sr
+    K[0, 1] = -a * k_sf + b * k_sr
+    K[0, 2] = -k_sf
+    K[0, 3] = -k_sr
+
+    K[1, 0] = -a * k_sf + b * k_sr
+    K[1, 1] = a**2 * k_sf + b**2 * k_sr
+    K[1, 2] = a * k_sf
+    K[1, 3] = -b * k_sr
+
+    K[2, 0] = -k_sf
+    K[2, 1] = a * k_sf
+    K[2, 2] = k_sf + k_tf
+    K[2, 3] = 0
+
+    K[3, 0] = -k_sr
+    K[3, 1] = -b * k_sr
+    K[3, 2] = 0
+    K[3, 3] = k_sr + k_tr
+
+    # Solve eigenvalue problem
+    eigvals, eigvecs = linalg.eig(K, M)
+
+    # Sort eigenvalues and eigenvectors
+    idx = eigvals.argsort()
+    eigenvalues = eigvals[idx].real
+    eigenvectors = eigvecs[:, idx].real
+
+    # Calculate natural frequencies in Hz
+    natural_frequencies = np.sqrt(eigenvalues) / (2 * np.pi)
+
+    # Calculate centers of oscillation for the sprung mass modes
+    # (The first two modes correspond to the sprung mass)
+    centers_of_oscillation = []
+
+    for i in range(2):  # Consider only the first two modes (sprung mass)
+        if abs(eigenvectors[1, i]) > 1e-6:  # Avoid division by zero
+            # Distance from CG where vertical motion is zero
+            # Center of oscillation is where z_s + x*theta = 0
+            x_co = -eigenvectors[0, i] / eigenvectors[1, i]
+            centers_of_oscillation.append(x_co)
+        else:
+            centers_of_oscillation.append(None)  # Pure bounce or no oscillation
+
+    return {
+        'eigenvalues': eigenvalues,
+        'natural_frequencies': natural_frequencies,
+        'eigenvectors': eigenvectors,
+        'centers_of_oscillation': centers_of_oscillation
+    }
+
+def run_simulation(damping=True, road_input="front", amplitude=0.05, t_max=5):
+    """
+    Run the simulation with given parameters.
+
+    Args:
+        damping: Boolean, whether to include damping
+        road_input: String, "front", "rear", or "both"
+        amplitude: Float, amplitude of road input
+        t_max: Float, simulation time
+
+    Returns:
+        Dictionary with simulation results
+    """
+    # Initial conditions (all zeros - system at rest)
+    initial_state = np.zeros(8)
+
+    # Time span
+    t_span = (0, t_max)
+
+    # Solve system of ODEs
+    solution = solve_ivp(
+        lambda t, y: system_dynamics(t, y, damping, road_input, amplitude),
+        t_span,
+        initial_state,
+        method='RK45',
+        t_eval=np.linspace(0, t_max, 1000)
+    )
+
+    # Extract results
+    t = solution.t
+    z_s = solution.y[0]
+    theta = solution.y[1]
+    z_uf = solution.y[2]
+    z_ur = solution.y[3]
+
+    # Calculate front and rear body displacements
+    z_sf = z_s - a * theta
+    z_sr = z_s + b * theta
+
+    return {
+        't': t,
+        'z_s': z_s,
+        'theta': theta,
+        'z_uf': z_uf,
+        'z_ur': z_ur,
+        'z_sf': z_sf,
+        'z_sr': z_sr
+    }
+
+def estimate_centers_of_oscillation(results, t_start=1.0):
+    """
+    Estimate centers of oscillation from simulation results.
+
+    Args:
+        results: Dictionary with simulation results
+        t_start: Time to start analysis (after initial transient)
+
+    Returns:
+        Estimated center of oscillation
+    """
+    # Find indices after t_start
+    indices = results['t'] > t_start
+
+    # Extract relevant data
+    z_s = results['z_s'][indices]
+    theta = results['theta'][indices]
+
+    # Find peaks in sprung mass displacement
+    peaks_z_s = []
+    for i in range(1, len(z_s)-1):
+        if z_s[i] > z_s[i-1] and z_s[i] > z_s[i+1]:
+            peaks_z_s.append(i)
+
+    # Find corresponding pitch angles
+    if len(peaks_z_s) > 0:
+        peak_z_s_values = [z_s[i] for i in peaks_z_s]
+        peak_theta_values = [theta[i] for i in peaks_z_s]
+
+        # Calculate ratio (should be constant for a mode)
+        if np.mean(np.abs(peak_theta_values)) > 1e-6:  # Avoid division by zero
+            x_co = -np.mean(peak_z_s_values) / np.mean(peak_theta_values)
+            return x_co
+
+    return None  # Unable to estimate
+
+def plot_results(results_undamped, results_damped, natural_frequencies, centers_of_oscillation):
+    """
+    Plot the simulation results.
+    """
+    # Create figure with 4 subplots instead of 3
+    fig, axs = plt.subplots(4, 1, figsize=(10, 16))
+
+    # Plot sprung mass displacement
+    axs[0].plot(results_undamped['t'], results_undamped['z_s'], 'b-', label='Undamped')
+    axs[0].plot(results_damped['t'], results_damped['z_s'], 'r-', label='Damped')
+    axs[0].set_xlabel('Time (s)')
+    axs[0].set_ylabel('Sprung Mass Displacement (m)')
+    axs[0].set_title('Sprung Mass Bounce Motion')
+    axs[0].legend()
+    axs[0].grid(True)
+
+    # Plot pitch motion
+    axs[1].plot(results_undamped['t'], results_undamped['theta'], 'b-', label='Undamped')
+    axs[1].plot(results_damped['t'], results_damped['theta'], 'r-', label='Damped')
+    axs[1].set_xlabel('Time (s)')
+    axs[1].set_ylabel('Pitch Angle (rad)')
+    axs[1].set_title('Sprung Mass Pitch Motion')
+    axs[1].legend()
+    axs[1].grid(True)
+
+    # Plot front body displacements
+    axs[2].plot(results_undamped['t'], results_undamped['z_sf'], 'b-', label='Front Undamped')
+    axs[2].plot(results_damped['t'], results_damped['z_sf'], 'r-', label='Front Damped')
+    axs[2].set_xlabel('Time (s)')
+    axs[2].set_ylabel('Displacement (m)')
+    axs[2].set_title('Front Body Displacements')
+    axs[2].legend()
+    axs[2].grid(True)
+
+    # Plot rear body displacements
+    axs[3].plot(results_undamped['t'], results_undamped['z_sr'], 'b-', label='Rear Undamped')
+    axs[3].plot(results_damped['t'], results_damped['z_sr'], 'r-', label='Rear Damped')
+    axs[3].set_xlabel('Time (s)')
+    axs[3].set_ylabel('Displacement (m)')
+    axs[3].set_title('Rear Body Displacements')
+    axs[3].legend()
+    axs[3].grid(True)
+
+    plt.tight_layout()
+
+    plt.savefig('half_car_response.png')
+    return fig
+
+# Main execution
+if __name__ == "__main__":
+    # Calculate natural frequencies and mode shapes
+    modal_analysis = calculate_natural_frequencies()
+    natural_frequencies = modal_analysis['natural_frequencies']
+    centers_of_oscillation = modal_analysis['centers_of_oscillation']
+
+    print("Natural Frequencies:")
+    for i, freq in enumerate(natural_frequencies):
+        print(f"Mode {i+1}: {freq:.2f} Hz")
+
+    print("\nCenters of Oscillation:")
+    for i, coc in enumerate(centers_of_oscillation[:2]):  # Only first 2 modes are for sprung mass
+        if coc is not None:
+            print(f"Mode {i+1}: {coc:.3f} m from CG")
+        else:
+            print(f"Mode {i+1}: Not applicable (pure motion)")
+
+
+    results_undamped_front = run_simulation(damping=False, road_input="front")
+    results_damped_front = run_simulation(damping=True, road_input="front")
+
+    # Plotting
+    plot_results(results_undamped_front, results_damped_front, natural_frequencies, centers_of_oscillation)
+    results_undamped_rear = run_simulation(damping=False, road_input="rear")
+    results_damped_rear = run_simulation(damping=True, road_input="rear")
+    coc_undamped_front = estimate_centers_of_oscillation(results_undamped_front)
+    coc_undamped_rear = estimate_centers_of_oscillation(results_undamped_rear)
+
+    print("\nEstimated Centers of Oscillation (from simulation):")
+    print(f"Front excitation: {coc_undamped_front:.3f} m from CG")
+    print(f"Rear excitation: {coc_undamped_rear:.3f} m from CG")
+    print("\nPeak Amplitude Comparison:")
+    print(f"Undamped maximum bounce amplitude: {max(abs(results_undamped_front['z_s'])):.4f} m")
+    print(f"Damped maximum bounce amplitude: {max(abs(results_damped_front['z_s'])):.4f} m")
+    print(f"Amplitude reduction: {(1 - max(abs(results_damped_front['z_s']))/max(abs(results_undamped_front['z_s']))) * 100:.1f}%")
+    print("\nPitch Amplitude Comparison:")
+    print(f"Undamped maximum pitch amplitude: {max(abs(results_undamped_front['theta'])):.6f} rad")
+    print(f"Damped maximum pitch amplitude: {max(abs(results_damped_front['theta'])):.6f} rad")
+    print(f"Pitch amplitude reduction: {(1 - max(abs(results_damped_front['theta']))/max(abs(results_undamped_front['theta']))) * 100:.1f}%")
+
+    print("\nSimulation and analysis complete!")
